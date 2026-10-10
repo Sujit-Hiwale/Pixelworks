@@ -1,17 +1,509 @@
-<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-*{box-sizing:border-box}body{margin:0;font:14px system-ui,sans-serif;color:#303149}.frame{width:100%;display:flex;justify-content:center}canvas{max-width:100%;height:auto;touch-action:none;border-radius:10px;background:#f1f2f7}.help{margin:6px 2px;color:#6d6e80;font-size:12px}
-</style></head><body>
-<div class="frame"><canvas id="editor"></canvas></div><div class="help">Drag each numbered handle. The points are returned in image pixel coordinates.</div>
-<script>
-const canvas=document.getElementById('editor'),ctx=canvas.getContext('2d');let args=null,img=new Image(),corners=[],drag=-1,scale=1,lastReset='';
-function send(){parent.postMessage({isStreamlitMessage:true,type:'streamlit:setComponentValue',value:{corners:corners.map(p=>[p[0]/scale,p[1]/scale]),nonce:Date.now()},dataType:'json'},'*')}
-function render(){if(!args||!img.complete)return;const maxW=Math.min(880,args.width||880,window.innerWidth-8),maxH=680;scale=Math.min(maxW/img.naturalWidth,maxH/img.naturalHeight,1);canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));ctx.drawImage(img,0,0,canvas.width,canvas.height);if(corners.length===4){ctx.beginPath();corners.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.closePath();ctx.fillStyle='rgba(85,91,245,.16)';ctx.fill();ctx.strokeStyle='#555bf5';ctx.lineWidth=3;ctx.stroke();corners.forEach((p,i)=>{ctx.beginPath();ctx.arc(p[0],p[1],10,0,Math.PI*2);ctx.fillStyle='white';ctx.fill();ctx.lineWidth=3;ctx.strokeStyle='#555bf5';ctx.stroke();ctx.fillStyle='#292a42';ctx.font='bold 12px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(String(i+1),p[0],p[1])})}requestAnimationFrame(()=>parent.postMessage({isStreamlitMessage:true,type:'streamlit:setFrameHeight',height:document.body.scrollHeight},'*'))}
-function receive(e){if(!e.data||!e.data.isStreamlitMessage)return;if(e.data.type==='streamlit:render'){args=e.data;img.onload=()=>{const key=JSON.stringify([args.args.image,args.args.resetToken]);if(key!==lastReset){lastReset=key;const maxW=Math.min(880,args.args.maxWidth||880,window.innerWidth-8),maxH=680;scale=Math.min(maxW/img.naturalWidth,maxH/img.naturalHeight,1);corners=(args.args.corners||[]).map(p=>[p[0]*scale,p[1]*scale]);if(corners.length!==4)corners=[[canvas.width*.08,canvas.height*.08],[canvas.width*.92,canvas.height*.08],[canvas.width*.92,canvas.height*.92],[canvas.width*.08,canvas.height*.92]];render()}else render()};img.src='data:image/jpeg;base64,'+args.args.image;parent.postMessage({isStreamlitMessage:true,type:'streamlit:setFrameHeight',height:window.innerHeight},'*')}}
-window.addEventListener('message',receive);parent.postMessage({isStreamlitMessage:true,type:'streamlit:componentReady',apiVersion:1},'*');
-function pos(e){const r=canvas.getBoundingClientRect();return[(e.clientX-r.left)*canvas.width/r.width,(e.clientY-r.top)*canvas.height/r.height]}
-canvas.addEventListener('pointerdown',e=>{const p=pos(e);drag=corners.reduce((best,c,i)=>Math.hypot(c[0]-p[0],c[1]-p[1])<Math.hypot(corners[best][0]-p[0],corners[best][1]-p[1])?i:best,0);canvas.setPointerCapture(e.pointerId)});
-canvas.addEventListener('pointermove',e=>{if(drag<0)return;const p=pos(e);corners[drag]=[Math.max(0,Math.min(canvas.width-1,p[0])),Math.max(0,Math.min(canvas.height-1,p[1]))];render()});
-canvas.addEventListener('pointerup',()=>{if(drag>=0){drag=-1;send()}});canvas.addEventListener('pointercancel',()=>drag=-1);window.addEventListener('resize',render);
-</script></body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root {
+      color-scheme: light dark;
+      --handle: #ffffff;
+      --line: #ffffff;
+      --accent: #4da3ff;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      background: transparent;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+
+    #root {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    #stage {
+      position: relative;
+      width: 100%;
+      overflow: hidden;
+      border-radius: 10px;
+      background: #171717;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      cursor: crosshair;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+    }
+
+    #hint {
+      color: var(--text-color, #777);
+      font-size: 12px;
+      line-height: 1.4;
+      padding: 0 2px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      #hint { color: #b8b8b8; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div id="stage"><canvas id="canvas"></canvas></div>
+    <div id="hint">Drag a corner to reshape the document, drag an edge to stretch it, or drag inside the outline to move the selection.</div>
+  </div>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const stage = document.getElementById("stage");
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d");
+
+      let image = new Image();
+      let imageReady = false;
+      let sourceWidth = 0;
+      let sourceHeight = 0;
+      let corners = [];
+      let resetToken = null;
+      let imageKey = null;
+      let cssWidth = 0;
+      let cssHeight = 0;
+      let pixelRatio = 1;
+      let drag = null;
+      let rafPending = false;
+      let lastSent = "";
+
+      const CORNER_RADIUS = 23;
+      const EDGE_RADIUS = 17;
+      const MIN_GAP = 2;
+
+      function sendValue() {
+        if (!corners.length || !sourceWidth || !sourceHeight) return;
+
+        const safeCorners = corners.map(([x, y]) => [
+          clamp(x, 0, sourceWidth),
+          clamp(y, 0, sourceHeight)
+        ]);
+        const value = { corners: safeCorners };
+        const serialized = JSON.stringify(value);
+        if (serialized === lastSent) return;
+        lastSent = serialized;
+
+        window.parent.postMessage({
+          isStreamlitMessage: true,
+          type: "streamlit:setComponentValue",
+          value,
+          dataType: "json"
+        }, "*");
+      }
+
+      function scheduleSend() {
+        if (rafPending) return;
+        rafPending = true;
+        requestAnimationFrame(() => {
+          rafPending = false;
+          sendValue();
+        });
+      }
+
+      function setFrameHeight(height) {
+        window.parent.postMessage({
+          isStreamlitMessage: true,
+          type: "streamlit:setFrameHeight",
+          height: Math.ceil(height)
+        }, "*");
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function defaultCorners() {
+        const marginX = sourceWidth * 0.08;
+        const marginY = sourceHeight * 0.08;
+        return [
+          [marginX, marginY],
+          [sourceWidth - marginX, marginY],
+          [sourceWidth - marginX, sourceHeight - marginY],
+          [marginX, sourceHeight - marginY]
+        ];
+      }
+
+      function normalizeCorners(input) {
+        if (!Array.isArray(input) || input.length !== 4) return defaultCorners();
+
+        const normalized = input.map(point => {
+          if (!Array.isArray(point) || point.length < 2) return null;
+          const x = Number(point[0]);
+          const y = Number(point[1]);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+          return [clamp(x, 0, sourceWidth), clamp(y, 0, sourceHeight)];
+        });
+
+        return normalized.every(Boolean) ? normalized : defaultCorners();
+      }
+
+      function fitCanvas() {
+        if (!imageReady || !sourceWidth || !sourceHeight) return;
+
+        const availableWidth = Math.max(240, stage.clientWidth || 880);
+        const scale = Math.min(1, availableWidth / sourceWidth);
+        cssWidth = Math.round(sourceWidth * scale);
+        cssHeight = Math.round(sourceHeight * scale);
+        pixelRatio = Math.max(1, window.devicePixelRatio || 1);
+
+        stage.style.height = cssHeight + "px";
+        canvas.style.width = cssWidth + "px";
+        canvas.style.height = cssHeight + "px";
+        canvas.width = Math.round(cssWidth * pixelRatio);
+        canvas.height = Math.round(cssHeight * pixelRatio);
+
+        ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        draw();
+        setFrameHeight(cssHeight + 38);
+      }
+
+      function toCanvas([x, y]) {
+        return [
+          x * cssWidth / sourceWidth,
+          y * cssHeight / sourceHeight
+        ];
+      }
+
+      function toSource(x, y) {
+        return [
+          clamp(x * sourceWidth / cssWidth, 0, sourceWidth),
+          clamp(y * sourceHeight / cssHeight, 0, sourceHeight)
+        ];
+      }
+
+      function polygonPath(points) {
+        ctx.beginPath();
+        points.forEach((point, index) => {
+          const [x, y] = toCanvas(point);
+          if (index === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.closePath();
+      }
+
+      function drawCornerHandle(x, y, dx, dy) {
+        const length = 22;
+        ctx.beginPath();
+        ctx.moveTo(x + dx * length, y);
+        ctx.lineTo(x, y);
+        ctx.lineTo(x, y + dy * length);
+        ctx.strokeStyle = "#111111";
+        ctx.lineWidth = 7;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(x + dx * length, y);
+        ctx.lineTo(x, y);
+        ctx.lineTo(x, y + dy * length);
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 4;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.stroke();
+      }
+
+      function edgeMidpoints(points) {
+        return points.map((point, i) => {
+          const next = points[(i + 1) % points.length];
+          return [(point[0] + next[0]) / 2, (point[1] + next[1]) / 2];
+        });
+      }
+
+      function draw() {
+        if (!imageReady || !cssWidth || !cssHeight) return;
+
+        ctx.clearRect(0, 0, cssWidth, cssHeight);
+        ctx.drawImage(image, 0, 0, cssWidth, cssHeight);
+
+        const pts = corners.map(toCanvas);
+
+        // Darken everything outside the selected quadrilateral.
+        ctx.save();
+        ctx.fillStyle = "rgba(0, 0, 0, 0.42)";
+        ctx.fillRect(0, 0, cssWidth, cssHeight);
+        ctx.globalCompositeOperation = "destination-out";
+        polygonPath(corners);
+        ctx.fill();
+        ctx.restore();
+
+        // Keep the selected document visible and outline it clearly.
+        polygonPath(corners);
+        ctx.save();
+        ctx.clip();
+        ctx.drawImage(image, 0, 0, cssWidth, cssHeight);
+        ctx.restore();
+
+        polygonPath(corners);
+        ctx.strokeStyle = "rgba(0,0,0,0.7)";
+        ctx.lineWidth = 5;
+        ctx.stroke();
+        polygonPath(corners);
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Subtle center crosshair helps position the selection without clutter.
+        const center = [
+          corners.reduce((sum, p) => sum + p[0], 0) / 4,
+          corners.reduce((sum, p) => sum + p[1], 0) / 4
+        ];
+        const [cx, cy] = toCanvas(center);
+        ctx.strokeStyle = "rgba(255,255,255,0.65)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 5]);
+        ctx.beginPath();
+        ctx.moveTo(cx - 12, cy);
+        ctx.lineTo(cx + 12, cy);
+        ctx.moveTo(cx, cy - 12);
+        ctx.lineTo(cx, cy + 12);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Crop-style L brackets; no numbered handles.
+        const directions = [
+          [-1, -1], [1, -1], [1, 1], [-1, 1]
+        ];
+        pts.forEach(([x, y], i) => {
+          drawCornerHandle(x, y, directions[i][0], directions[i][1]);
+        });
+
+        // Small pill-shaped edge grips allow independent edge stretching.
+        const mids = edgeMidpoints(corners).map(toCanvas);
+        mids.forEach(([x, y]) => {
+          ctx.beginPath();
+          ctx.roundRect(x - 8, y - 5, 16, 10, 5);
+          ctx.fillStyle = "#ffffff";
+          ctx.shadowColor = "rgba(0,0,0,0.65)";
+          ctx.shadowBlur = 4;
+          ctx.fill();
+          ctx.shadowBlur = 0;
+          ctx.strokeStyle = "#222222";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        });
+      }
+
+      function distance(a, b) {
+        return Math.hypot(a[0] - b[0], a[1] - b[1]);
+      }
+
+      function pointInPolygon(point, polygon) {
+        const [x, y] = point;
+        let inside = false;
+        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+          const [xi, yi] = polygon[i];
+          const [xj, yj] = polygon[j];
+          const intersects = ((yi > y) !== (yj > y)) &&
+            (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-9) + xi);
+          if (intersects) inside = !inside;
+        }
+        return inside;
+      }
+
+      function hitTest(x, y) {
+        const point = [x, y];
+        const pts = corners.map(toCanvas);
+
+        let best = null;
+        let bestDistance = Infinity;
+
+        pts.forEach((p, i) => {
+          const d = distance(point, p);
+          if (d < CORNER_RADIUS && d < bestDistance) {
+            best = { type: "corner", index: i };
+            bestDistance = d;
+          }
+        });
+        if (best) return best;
+
+        const mids = edgeMidpoints(corners).map(toCanvas);
+        mids.forEach((p, i) => {
+          const d = distance(point, p);
+          if (d < EDGE_RADIUS && d < bestDistance) {
+            best = { type: "edge", index: i };
+            bestDistance = d;
+          }
+        });
+        if (best) return best;
+
+        if (pointInPolygon(point, pts)) return { type: "move" };
+        return null;
+      }
+
+      function pointerPosition(event) {
+        const rect = canvas.getBoundingClientRect();
+        return [event.clientX - rect.left, event.clientY - rect.top];
+      }
+
+      function onPointerDown(event) {
+        if (!imageReady || !corners.length) return;
+        const [x, y] = pointerPosition(event);
+        const target = hitTest(x, y);
+        if (!target) return;
+
+        event.preventDefault();
+        canvas.setPointerCapture(event.pointerId);
+
+        const [sx, sy] = toSource(x, y);
+        drag = {
+          pointerId: event.pointerId,
+          type: target.type,
+          index: target.index,
+          startX: sx,
+          startY: sy,
+          initialCorners: corners.map(p => [...p])
+        };
+
+        stage.style.cursor = target.type === "move" ? "grabbing" : "crosshair";
+      }
+
+      function onPointerMove(event) {
+        if (!drag || drag.pointerId !== event.pointerId) {
+          if (!drag) {
+            const [x, y] = pointerPosition(event);
+            const target = hitTest(x, y);
+            stage.style.cursor = !target ? "crosshair" :
+              target.type === "move" ? "grab" : "crosshair";
+          }
+          return;
+        }
+
+        event.preventDefault();
+        const [x, y] = pointerPosition(event);
+        const [sx, sy] = toSource(x, y);
+        const dx = sx - drag.startX;
+        const dy = sy - drag.startY;
+        const base = drag.initialCorners;
+
+        if (drag.type === "corner") {
+          const i = drag.index;
+          corners = base.map(p => [...p]);
+          corners[i] = [sx, sy];
+        } else if (drag.type === "edge") {
+          // Moving an edge shifts both endpoints, preserving a straight edge.
+          const i = drag.index;
+          const j = (i + 1) % 4;
+          corners = base.map(p => [...p]);
+          corners[i] = [
+            clamp(base[i][0] + dx, 0, sourceWidth),
+            clamp(base[i][1] + dy, 0, sourceHeight)
+          ];
+          corners[j] = [
+            clamp(base[j][0] + dx, 0, sourceWidth),
+            clamp(base[j][1] + dy, 0, sourceHeight)
+          ];
+        } else if (drag.type === "move") {
+          corners = base.map(([px, py]) => [
+            clamp(px + dx, 0, sourceWidth),
+            clamp(py + dy, 0, sourceHeight)
+          ]);
+        }
+
+        draw();
+        scheduleSend();
+      }
+
+      function onPointerUp(event) {
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        event.preventDefault();
+        drag = null;
+        stage.style.cursor = "crosshair";
+        sendValue();
+      }
+
+      function loadImage(dataUrl, incomingCorners, incomingResetToken, incomingKey) {
+        const changedImage = incomingKey !== imageKey;
+        const changedReset = incomingResetToken !== resetToken;
+
+        if (!changedImage && !changedReset) {
+          if (!corners.length && Array.isArray(incomingCorners)) {
+            corners = normalizeCorners(incomingCorners);
+            draw();
+          }
+          return;
+        }
+
+        imageKey = incomingKey;
+        resetToken = incomingResetToken;
+        drag = null;
+        lastSent = "";
+
+        imageReady = false;
+        image = new Image();
+        image.onload = () => {
+          sourceWidth = image.naturalWidth;
+          sourceHeight = image.naturalHeight;
+          imageReady = true;
+          corners = normalizeCorners(incomingCorners);
+          fitCanvas();
+          sendValue();
+        };
+        image.onerror = () => {
+          stage.style.height = "180px";
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          setFrameHeight(220);
+        };
+        // Streamlit callers may send either a complete data URL or raw Base64.
+        // Convert raw Base64 to a data URL so the image actually renders.
+        let normalizedSrc = String(dataUrl || "").trim();
+        if (normalizedSrc && !/^data:image\//i.test(normalizedSrc) && !/^https?:\/\//i.test(normalizedSrc) && !normalizedSrc.startsWith("blob:")) {
+          normalizedSrc = "data:image/jpeg;base64," + normalizedSrc;
+        }
+        image.src = normalizedSrc;
+      }
+
+      function handleRenderMessage(event) {
+        const data = event.data;
+        if (!data || data.type !== "streamlit:render") return;
+
+        const args = data.args || {};
+        const dataUrl = args.image || args.imageData || args.src || "";
+        const incomingCorners = args.corners;
+        const incomingResetToken = args.resetToken ?? args.reset ?? 0;
+        const incomingKey = args.imageKey || args.key || dataUrl;
+
+        if (dataUrl) loadImage(dataUrl, incomingCorners, incomingResetToken, incomingKey);
+      }
+
+      canvas.addEventListener("pointerdown", onPointerDown);
+      canvas.addEventListener("pointermove", onPointerMove);
+      canvas.addEventListener("pointerup", onPointerUp);
+      canvas.addEventListener("pointercancel", onPointerUp);
+      canvas.addEventListener("lostpointercapture", () => {
+        drag = null;
+        stage.style.cursor = "crosshair";
+      });
+
+      window.addEventListener("message", handleRenderMessage);
+      window.addEventListener("resize", fitCanvas);
+
+      // Standard Streamlit component handshake.
+      window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 }, "*");
+      window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: 260 }, "*");
+    })();
+  </script>
+</body>
+</html>
