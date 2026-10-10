@@ -1,0 +1,9 @@
+streamlit==1.41.1
+Pillow==11.1.0
+numpy==2.2.2
+opencv-python-headless==4.11.0.86
+reportlab==4.3.1
+pypdf==5.3.1
+pytesseract==0.3.13
+streamlit-image-coordinates==0.3.1
+streamlit-cropper==0.3.1
